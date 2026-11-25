@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eskit"
+version = "0.1.0"
+description = "A friendly wrapper around elasticsearch-py and elasticsearch.dsl"
+readme = "README.md"
+requires-python = ">=3.10"
+# Client major version must match the server: use "<9" for an 8.x cluster.
+dependencies = ["elasticsearch>=8.18,<10"]
+
+[project.optional-dependencies]
+async = ["elasticsearch[async]>=8.18,<10"]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+eskit = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
