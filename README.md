@@ -18,6 +18,72 @@ pytest                         # بدون نیاز به سرور
 نسخه‌ی major کلاینت باید با سرور یکی باشد. برای سرور 8:
 `pip install "elasticsearch>=8.18,<9"` و `STACK_VERSION` را هم تغییر دهید.
 
+## اتصال به دیتابس موجود
+
+۱) تنظیمات را با متغیر محیطی بدهید:
+
+```bash
+export ES_HOSTS=https://es.example.com:9200
+export ES_API_KEY=...                  # یا ES_USERNAME و ES_PASSWORD
+export ES_CA_CERTS=/path/http_ca.crt   # برای گواهی self-signed
+```
+
+فایل `.env` خودکار خوانده نمی‌شود (`set -a; . ./.env; set +a`).
+
+۲) بررسی با خط فرمان (فقط خواندنی):
+
+```bash
+eskit check
+eskit indices
+eskit schema products
+eskit search products --match title=laptop --eq brand=asus --size 5
+eskit export products --out products.jsonl --limit 10000
+```
+
+۳) در کد:
+
+```python
+from eskit import Database, ESManager, ESSettings, QueryBuilder
+
+with ESManager() as es:
+    es.configure(ESSettings.from_env())
+    db = Database(es.client())            # پیش‌فرض: read_only=True
+    db.check()
+    s = db.schema("products")
+    repo = db.repository("products")      # alias یا الگو مثل "logs-*" هم می‌شود
+
+    q = (QueryBuilder()
+         .must(s.text("title").match("laptop"))
+         .filter(s.exact("brand") == "asus"))   # خودش brand.keyword را پیدا می‌کند
+    for doc in repo.search(q):
+        print(doc["_id"], doc)
+
+    for hit in repo.iter_all(q):          # همه‌ی نتایج
+        ...
+```
+
+برای نوشتن: `Database(client, read_only=False)`.
+
+### نکته‌های مهم
+
+- `read_only` فقط جلوی اشتباه در Repository را می‌گیرد و امنیت نیست؛ `client` خام و
+  `IndexManager` را محدود نمی‌کند. برای محافظت واقعی API key فقط‌خواندنی بسازید:
+
+```json
+POST /_security/api_key
+{"name": "eskit-readonly",
+ "role_descriptors": {"reader": {
+   "cluster": ["monitor"],
+   "indices": [{"names": ["products*"],
+                "privileges": ["read", "view_index_metadata", "monitor"]}]}}}
+```
+
+- نسخه‌ی major کلاینت و سرور باید یکی باشد. سرور قدیمی‌تر از 8 و OpenSearch پشتیبانی نمی‌شود.
+- `save` کل سند را جایگزین می‌کند. اگر مدل شما همه‌ی فیلدها را ندارد، از `update` استفاده کنید.
+- `get/save/update/delete` به یک مقصد مشخص نیاز دارند، نه الگو. Data stream محدودیت نوشتن دارد.
+- فیلدهای داخل nested را با `nested(path, query)` جستجو کنید.
+- `export` فقط `_source` و `_id` را می‌نویسد، نه mapping و تنظیمات؛ جای snapshot/backup نیست.
+
 ## اتصال
 
 ```python
@@ -71,7 +137,8 @@ q.to_search(index="products")    # شیء Search از elasticsearch.dsl
 iter_all, bulk_save` (نسخه‌ی async: `AsyncRepository`).
 
 - `model` می‌تواند dataclass، مدل pydantic یا خالی (dict) باشد.
-- فیلد `id` به `_id` تبدیل می‌شود و داخل `_source` ذخیره نمی‌شود.
+- در حالت dict کلید `_id` شناسه‌ی سند است و بقیه‌ی کلیدها دست‌نخورده می‌مانند.
+- در مدل‌ها فیلد `id` همان `_id` است و در `_source` ذخیره نمی‌شود. اگر داده‌ی موجود خودش فیلد `id` دارد، خواندن مقدار آن را نگه می‌دارد؛ برای نوشتن `id_field` را عوض کنید.
 - اگر از `source()` برای حذف فیلدهای اجباری مدل استفاده کنید، `load` را override کنید.
 - برای بیش از ۱۰٬۰۰۰ نتیجه از `iter_all` استفاده کنید.
 - bulk خطای هر سند را در `BulkReport` برمی‌گرداند؛ `raise_for_errors()` آن را exception می‌کند.
@@ -79,7 +146,7 @@ iter_all, bulk_save` (نسخه‌ی async: `AsyncRepository`).
 ## خطاها
 
 `ESKitError` → `ESConfigError`, `ESConnectionError` (→ `ESTimeoutError`), `ESAuthError`,
-`ESNotFoundError`, `ESConflictError`, `ESQueryError`, `ESBulkError`.
+`ESNotFoundError`, `ESConflictError`, `ESQueryError`, `ESBulkError`, `ESReadOnlyError`.
 ترجمه‌ی خطا برای متدهای eskit است؛ فراخوانی مستقیم client یا DSL خطای اصلی را می‌دهد.
 
 ## مهاجرت mapping
