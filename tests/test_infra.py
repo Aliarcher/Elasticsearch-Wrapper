@@ -64,7 +64,7 @@ def test_async_manager_and_repository():
             repo = AsyncRepository(manager.client(), index="i")
             return [h.source async for h in repo.iter_all()]
 
-    assert asyncio.run(run()) == [{"n": 1, "id": "1"}]
+    assert asyncio.run(run()) == [{"n": 1, "_id": "1"}]
     fake.close.assert_awaited_once()
     fake.close_point_in_time.assert_awaited_once_with(id="p")
 

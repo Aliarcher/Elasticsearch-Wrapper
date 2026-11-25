@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from typing import Any, Generic, TypeVar
 
 from .bulk import BulkReport, abulk_write, bulk_write
-from .exceptions import ESNotFoundError, translate_errors
+from .exceptions import ESNotFoundError, ESReadOnlyError, translate_errors
 from .query import QueryBuilder
 from .results import Hit, SearchResult
 
@@ -34,8 +34,11 @@ class _BaseRepository(Generic[T]):
         client: Any,
         index: str | None = None,
         model: type[T] | None = None,
+        *,
+        read_only: bool = False,
     ) -> None:
         self.client = client
+        self.read_only = read_only
         self.index = index or type(self).index
         self.model = model or type(self).model
         if not self.index:
@@ -52,23 +55,38 @@ class _BaseRepository(Generic[T]):
         raise TypeError(f"Cannot serialize {type(entity).__name__}")
 
     def load(self, source: dict[str, Any], doc_id: str) -> T:
+        """Dicts get an extra "_id" key; stored fields are never overwritten.
+
+        For models, fields the model does not declare are ignored, and
+        `id_field` is filled from _id only when _source has no such field.
+        """
         if self.model is None:
-            return {**source, self.id_field: doc_id}  # type: ignore[return-value]
+            return {**source, "_id": doc_id}  # type: ignore[return-value]
         data = dict(source)
-        fields = getattr(self.model, "model_fields", None) or getattr(
-            self.model, "__dataclass_fields__", {}
-        )
+        declared = getattr(self.model, "__dataclass_fields__", None)
+        if declared is not None:
+            data = {k: v for k, v in data.items() if k in declared and declared[k].init}
+        fields = declared or getattr(self.model, "model_fields", {})
         if self.id_field in fields:
-            data[self.id_field] = doc_id
+            data.setdefault(self.id_field, doc_id)
         return self.model(**data)
 
     def _prepare(self, entity: Any, doc_id: str | None) -> tuple[str | None, dict[str, Any]]:
-        """Split an entity into (_id, _source). The id is not stored in _source."""
+        """Split an entity into (_id, _source).
+
+        Dicts: "_id" is the document id; every other key is stored unchanged.
+        Models: `id_field` is the document id and is not stored in _source.
+        """
         source = self.dump(entity)
-        own_id = source.pop(self.id_field, None)
+        key = "_id" if isinstance(entity, Mapping) else self.id_field
+        own_id = source.pop(key, None)
         if doc_id is None and own_id is not None:
             doc_id = str(own_id)
         return doc_id, source
+
+    def _check_writable(self) -> None:
+        if self.read_only:
+            raise ESReadOnlyError(f"Repository for {self.index!r} is read-only.")
 
     def _actions(self, entity: Any) -> dict[str, Any]:
         doc_id, source = self._prepare(entity, None)
@@ -128,6 +146,7 @@ class Repository(_BaseRepository[T]):
 
     def save(self, entity: Any, doc_id: str | None = None, *, refresh: Refresh = None) -> str:
         """Create or fully replace. Returns the document id."""
+        self._check_writable()
         doc_id, source = self._prepare(entity, doc_id)
         with translate_errors():
             response = self.client.index(
@@ -137,6 +156,7 @@ class Repository(_BaseRepository[T]):
 
     def create(self, entity: Any, doc_id: str | None = None, *, refresh: Refresh = None) -> str:
         """Create only. Raises ESConflictError if the id exists."""
+        self._check_writable()
         doc_id, source = self._prepare(entity, doc_id)
         with translate_errors():
             response = self.client.index(
@@ -157,6 +177,7 @@ class Repository(_BaseRepository[T]):
         retry_on_conflict: int = 3,
     ) -> None:
         """Partial update."""
+        self._check_writable()
         with translate_errors():
             self.client.update(
                 index=self.index,
@@ -169,6 +190,7 @@ class Repository(_BaseRepository[T]):
 
     def delete(self, doc_id: str, *, refresh: Refresh = None) -> bool:
         """Returns False if the document did not exist."""
+        self._check_writable()
         try:
             with translate_errors():
                 self.client.delete(index=self.index, id=doc_id, **_opts(refresh=refresh))
@@ -221,6 +243,7 @@ class Repository(_BaseRepository[T]):
                 self.client.close_point_in_time(id=pit_id)
 
     def bulk_save(self, entities: Iterable[Any], **options: Any) -> BulkReport:
+        self._check_writable()
         return bulk_write(self.client, (self._actions(e) for e in entities), **options)
 
 
@@ -256,6 +279,7 @@ class AsyncRepository(_BaseRepository[T]):
     async def save(
         self, entity: Any, doc_id: str | None = None, *, refresh: Refresh = None
     ) -> str:
+        self._check_writable()
         doc_id, source = self._prepare(entity, doc_id)
         with translate_errors():
             response = await self.client.index(
@@ -266,6 +290,7 @@ class AsyncRepository(_BaseRepository[T]):
     async def create(
         self, entity: Any, doc_id: str | None = None, *, refresh: Refresh = None
     ) -> str:
+        self._check_writable()
         doc_id, source = self._prepare(entity, doc_id)
         with translate_errors():
             response = await self.client.index(
@@ -285,6 +310,7 @@ class AsyncRepository(_BaseRepository[T]):
         refresh: Refresh = None,
         retry_on_conflict: int = 3,
     ) -> None:
+        self._check_writable()
         with translate_errors():
             await self.client.update(
                 index=self.index,
@@ -296,6 +322,7 @@ class AsyncRepository(_BaseRepository[T]):
             )
 
     async def delete(self, doc_id: str, *, refresh: Refresh = None) -> bool:
+        self._check_writable()
         try:
             with translate_errors():
                 await self.client.delete(index=self.index, id=doc_id, **_opts(refresh=refresh))
@@ -353,4 +380,5 @@ class AsyncRepository(_BaseRepository[T]):
                 await self.client.close_point_in_time(id=pit_id)
 
     async def bulk_save(self, entities: Iterable[Any], **options: Any) -> BulkReport:
+        self._check_writable()
         return await abulk_write(self.client, (self._actions(e) for e in entities), **options)

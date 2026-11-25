@@ -48,6 +48,10 @@ class ESBulkError(ESKitError):
     pass
 
 
+class ESReadOnlyError(ESKitError):
+    """A write was attempted through a read-only object."""
+
+
 _BY_STATUS: dict[int, type[ESKitError]] = {
     400: ESQueryError,
     401: ESAuthError,

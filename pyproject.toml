@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eskit"
-version = "0.1.0"
+version = "0.2.0"
 description = "A friendly wrapper around elasticsearch-py and elasticsearch.dsl"
 readme = "README.md"
 requires-python = ">=3.10"
 # Client major version must match the server: use "<9" for an 8.x cluster.
 dependencies = ["elasticsearch>=8.18,<10"]
+
+[project.scripts]
+eskit = "eskit.cli:main"
 
 [project.optional-dependencies]
 async = ["elasticsearch[async]>=8.18,<10"]
